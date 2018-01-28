@@ -1,0 +1,310 @@
+<!--
+	RetroArch - A frontend for libretro.
+	Copyright (C) 2010-2014 - Hans-Kristian Arntzen
+	Copyright (C) 2011-2017 - Daniel De Matteis
+	Copyright (C) 2012-2015 - Michael Lelli
+	Modifications Copyright (C) 2018 - Trevor Behlman
+
+	RetroArch is free software: you can redistribute it and/or modify it under the terms
+	of the GNU General Public License as published by the Free Software Found-
+	ation, either version 3 of the License, or (at your option) any later version.
+
+	RetroArch is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+	without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+	PURPOSE.  See the GNU General Public License for more details.
+
+	You should have received a copy of the GNU General Public License along with RetroArch.
+	If not, see <http://www.gnu.org/licenses/>.
+-->
+<!doctype html>
+<html>
+	<head>
+		<title>XMB</title>
+		<link rel="stylesheet" href="./config.css">
+		<script src="./config.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/regl/1.3.1/regl.js"></script>
+		<script id="BackgroundVertex" type="x-shader/x-vertex">
+			precision lowp float;
+	
+			attribute vec2 position;
+	
+			varying float y;
+	
+			void main() {
+				y = position.y;
+				gl_Position = vec4( position, 0.0, 1.0 );
+			}
+		</script>
+		<script id="BackgroundFragment" type="x-shader/x-fragment">
+			precision lowp float;
+	
+			uniform vec3 color;
+	
+			varying float y;
+	
+			void main() {
+				gl_FragColor = vec4( ( 1.0 - y * 0.625 ) * color, 1.0 );
+			}
+		</script>
+		<script id="FlowVertex" type="x-shader/x-vertex">
+			precision lowp float;
+	
+			attribute vec2 position;
+	
+			uniform float time;
+			uniform float ratio;
+			uniform float step;
+			uniform float opacity;
+	
+			varying float alpha;
+	
+			float iqhash( float n ) {
+				return fract( sin( n ) * 43758.5453 );
+			}
+	
+			float noise( vec3 x ) {
+				vec3 f = fract( x );
+				f = f * f * ( 3.0 - 2.0 * f );
+				float n = dot( floor( x ), vec3( 1.0, 57.0, 113.0 ) );
+				return mix(
+							mix( mix( iqhash( n +   0.0 ), iqhash( n +   1.0 ), f.x ),
+								 mix( iqhash( n +  57.0 ), iqhash( n +  58.0 ), f.x ),
+								 f.y ),
+							mix(
+								 mix( iqhash( n + 113.0 ), iqhash( n + 114.0 ), f.x ),
+								 mix( iqhash( n + 170.0 ), iqhash( n + 171.0 ), f.x ),
+								 f.y ),
+							f.z );
+			}
+	
+			vec3 getVertex( float x, float y ) {
+				vec3 vertex = vec3( x, cos( y * 4.0 ) * cos( y + time / 5.0 + x ) / 8.0, y );
+	
+				float c = noise( vertex * vec3( 7.0 / 4.0, 7.0, 7.0 ) ) / 15.0;
+				vertex.y += c + cos( x * 2.0 - time ) * ratio / 2.0 - 0.3;
+				vertex.z += c;
+	
+				return vertex;
+			}
+	
+			void main() {
+				gl_Position = vec4( getVertex( position.x, position.y ), 1.0 );
+	
+				vec3 dfdx = getVertex( position.x + step, position.y ) - gl_Position.xyz;
+				vec3 dfdy = getVertex( position.x, position.y + step ) - gl_Position.xyz;
+				alpha = 1.0 - abs( normalize( cross( dfdx, dfdy ) ).z );
+				alpha = ( 1.0 - cos( alpha * alpha ) ) * opacity;
+			}
+		</script>
+		<script id="FlowFragment" type="x-shader/x-fragment">
+			precision lowp float;
+	
+			varying float alpha;
+	
+			void main() {
+				gl_FragColor = vec4( alpha, alpha, alpha, 1.0 );
+			}
+		</script>
+		<script id="ParticleVertex" type="x-shader/x-vertex">
+			precision lowp float;
+	
+			attribute vec3 seed;
+			uniform float time;
+			uniform float ratio;
+			uniform float opacity;
+	
+			varying float alpha;
+	
+			float getWave( float x, float y ) {
+				return cos( y * 4.0 ) * cos( x + y + time / 5.0 ) / 8.0 + cos( x * 2.0 - time ) * ratio / 2.0 - 0.28;
+			}
+	
+			void main() {
+				gl_PointSize = seed.z;
+	
+				float x = fract( time * ( seed.x - 0.5 ) / 15.0 + seed.y * 50.0 ) * 2.0 - 1.0;
+				float y = sin( sign( seed.y ) * time * ( seed.y + 1.5 ) / 4.0 + seed.x * 100.0 );
+				y /= ( 6.0 - seed.x * 4.0 * seed.y ) / ratio;
+	
+				float opacityVariance = mix(
+					sin( time * ( seed.x + 0.5 ) * 12.0 + seed.y * 10.0 ),
+					sin( time * ( seed.y + 1.5 ) * 6.0 + seed.x * 4.0 ),
+					y * 0.5 + 0.5 ) * seed.x + seed.y;
+				alpha = opacity * opacityVariance * opacityVariance;
+	
+				y += getWave( x, seed.y );
+	
+				gl_Position = vec4( x, y, 0.0, 1.0 );
+			}
+		</script>
+		<script id="ParticleFragment" type="x-shader/x-fragment">
+			precision lowp float;
+	
+			varying float alpha;
+	
+			void main() {
+				vec2 cxy = gl_PointCoord * 2.0 - 1.0;
+				float radius = dot( cxy, cxy );
+				gl_FragColor = vec4( vec3( alpha * max( 0.0, 1.0 - radius * radius ) ), 1.0 );
+			}
+		</script>
+	</head>
+	<body>
+		<script>
+			const regl = createREGL( {
+				attributes: {
+					antialias: false
+				},
+				optionalExtensions: [ "EXT_disjoint_timer_query" ],
+				profile: true
+			} );
+	
+			const RESOLUTION = 50;
+			const NUM_PARTICLES = 400;
+			const NUM_VERTICES = RESOLUTION * RESOLUTION + ( RESOLUTION + 2 ) * ( RESOLUTION - 2 ) + 2;
+			const PARTICLE_SIZE = 8;
+	
+			function makeFlowVertices() {
+				const vertices = new Float32Array( NUM_VERTICES * 3 );
+				const yPos = new Float32Array( RESOLUTION );
+				for( let y = 0; y < RESOLUTION; y++ ) {
+					yPos[ y ] = y / ( RESOLUTION - 1 ) * 2 - 1;
+				}
+				let xPos1 = -1;
+				let numVertices = 0;
+				for( let x = 1; x < RESOLUTION; x++ ) {
+					const xPos2 = x / ( RESOLUTION - 1 ) * 2 - 1;
+					vertices[ numVertices++ ] = xPos2;
+					vertices[ numVertices++ ] = -1;
+					for( let y = 0; y < RESOLUTION; y++ ) {
+						vertices[ numVertices++ ] = xPos2;
+						vertices[ numVertices++ ] = yPos[ y ];
+						vertices[ numVertices++ ] = xPos1;
+						vertices[ numVertices++ ] = yPos[ y ];
+					}
+					vertices[ numVertices++ ] = xPos1;
+					vertices[ numVertices++ ] = 1;
+					xPos1 = xPos2;
+				}
+				return vertices;
+			}
+	
+			function makeParticleSeeds() {
+				const seeds = new Float32Array( NUM_PARTICLES * 3 );
+				let numSeeds = 0;
+				for( let i = 0; i < NUM_PARTICLES; i++ ) {
+					seeds[ numSeeds++ ] = Math.random();
+					seeds[ numSeeds++ ] = Math.random();
+					seeds[ numSeeds++ ] = Math.pow( Math.random(), 10 ) * PARTICLE_SIZE + 3;
+				}
+				return seeds;
+			}
+	
+			const drawBackground = regl( {
+				vert: BackgroundVertex.firstChild.nodeValue,
+				frag: BackgroundFragment.firstChild.nodeValue,
+				primitive: "triangle strip",
+				count: 4,
+				attributes: {
+					position: [
+						+1, -1,
+						-1, -1,
+						+1, +1,
+						-1, +1
+					]
+				},
+				uniforms: {
+					color: regl.prop( "color" )
+				},
+				dither: false,
+				depth: { enable: false }
+			} );
+	
+			const drawFlow = regl( {
+				vert: FlowVertex.firstChild.nodeValue,
+				frag: FlowFragment.firstChild.nodeValue,
+				primitive: "triangle strip",
+				count: NUM_VERTICES,
+				attributes: {
+					position: makeFlowVertices()
+				},
+				uniforms: {
+					time: regl.prop("time"),
+					opacity: regl.prop( "opacity" ),
+					ratio: regl.prop( "ratio" ),
+					step: 2 / RESOLUTION
+				},
+				blend: {
+					enable: true,
+					func: { src: 1, dst: 1 }
+				},
+				dither: false
+			} );
+	
+			const drawParticles = regl( {
+				vert: ParticleVertex.firstChild.nodeValue,
+				frag: ParticleFragment.firstChild.nodeValue,
+				primitive: "points",
+				count: NUM_PARTICLES,
+				attributes: {
+					seed: makeParticleSeeds()
+				},
+				uniforms: {
+					time: regl.prop("time"),
+					ratio: regl.prop("ratio"),
+					opacity: regl.prop( "particleOpacity" )
+				},
+				blend: {
+					enable: true,
+					func: { src: 1, dst: 1 }
+				},
+				dither: false,
+				depth: { enable: false }
+			} );
+	
+			const drawParams = {
+				time: 0,
+				color: [ 0, 0, 0 ]
+			};
+	
+			const config = new Configuration( document.body );
+			config.addList( "Color", [
+					[ "silk"     , [ 104, 107, 108 ] ],
+					[ "turquoise", [  26, 115, 115 ] ],
+					[ "emerald"  , [  20, 101,  50 ] ],
+					[ "sapphire" , [  37,  89, 179 ] ],
+					[ "gold"     , [ 160, 120,  0 ] ],
+					[ "ruby"     , [ 116,  15,  48 ] ],
+					[ "amethyst" , [ 118,   6, 135 ] ],
+					[ "amber"    , [ 192, 114,  40 ] ]
+				], "sapphire", ( color ) => drawParams.backgroundColor = color );
+			config.addRange( "Speed", 0.25, 0, 4, 0.01, ( flowSpeed ) => drawParams.flowSpeed = flowSpeed );
+			config.addRange( "Opacity", .75, 0, 1, 0.01, ( opacity ) => drawParams.opacity = opacity );
+			config.addRange( "Day", 0.5, 0, 1, 0.01, ( day ) => drawParams.brightness = ( 1 - Math.cos( day * 2 * Math.PI ) ) / 1.75 );
+			config.addRange( "Particle opacity", 0.75, 0, 1, 0.01, ( particleOpacity ) => drawParams.particleOpacity = particleOpacity );
+	
+			let lastTime = 0;
+	
+			var tick = regl.frame( ( context ) => {
+				drawParams.backgroundColor.forEach( ( channel, i ) => drawParams.color[ i ] = channel * drawParams.brightness / 255 );
+				drawParams.ratio = Math.max( 1.0, Math.min( context.viewportWidth / context.viewportHeight, 2.0 ) ) * 0.375;
+				drawParams.time = drawParams.time + ( context.time - lastTime ) * drawParams.flowSpeed;
+				lastTime = context.time;
+				drawBackground( drawParams );
+				drawFlow( drawParams );
+				drawParticles( drawParams );
+			} );
+			//requestAnimationFrame(tick.cancel);
+	
+			function perf() {
+				const count = drawFlow.stats.count / 1000;
+				console.log( `bacgkround cpu: ${Math.round(drawBackground.stats.cpuTime / count)}` );
+				console.log( `bacgkround gpu: ${Math.round(drawBackground.stats.gpuTime / count)}` );
+				console.log( `flow       cpu: ${Math.round(drawFlow.stats.cpuTime / count)}` );
+				console.log( `flow       gpu: ${Math.round(drawFlow.stats.gpuTime / count)}` );
+				console.log( `particles  cpu: ${Math.round(drawParticles.stats.cpuTime / count)}` );
+				console.log( `particles  gpu: ${Math.round(drawParticles.stats.gpuTime / count)}` );
+			}
+		</script>
+	</body>
+</html>
