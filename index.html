@@ -28,10 +28,14 @@
 	
 			attribute vec2 position;
 	
-			varying float y;
+			uniform vec2 resolution;
+			
+			varying highp vec2 pos;
+			varying float gradient;
 	
 			void main() {
-				y = position.y;
+				pos = position * resolution;
+				gradient = 1.0 - position.y * 0.625;
 				gl_Position = vec4( position, 0.0, 1.0 );
 			}
 		</script>
@@ -39,11 +43,31 @@
 			precision lowp float;
 	
 			uniform vec3 color;
-	
-			varying float y;
-	
+			uniform vec2 resolution;
+			uniform sampler2D bayerTexture;
+			
+			varying highp vec2 pos;
+			varying float gradient;
+			
+			const float colorDepth = 255.0;
+			const float inverseColorDepth = 1.0 / colorDepth;
+
+			float luma( vec3 color ) {
+				return dot( color, vec3( 0.299, 0.587, 0.114 ) );
+			}
+
+			float dither( vec2 position, float diff ) {
+				float threshold = texture2D( bayerTexture, mod( position, 8.0 ) / 16.0 ).a;
+				return float( diff < threshold );
+			}
+
+			vec3 dither( vec2 position, vec3 color ) {
+				vec3 diff = inverseColorDepth - mod( color, inverseColorDepth );
+				return mix( color, color + diff, dither( position, luma( diff * colorDepth ) ) );
+			}
+
 			void main() {
-				gl_FragColor = vec4( ( 1.0 - y * 0.625 ) * color, 1.0 );
+				gl_FragColor = vec4( dither( pos, gradient * color ), 1.0 );
 			}
 		</script>
 		<script id="FlowVertex" type="x-shader/x-vertex">
@@ -214,7 +238,23 @@
 					]
 				},
 				uniforms: {
-					color: regl.prop( "color" )
+					color: regl.prop( "color" ),
+					resolution: ( context, props ) => [ context.viewportWidth, context.viewportHeight ],
+					bayerTexture: regl.texture( {
+						data: Uint8Array.of(
+							0, 128,  32, 160,   8, 136,  40, 168,
+							192,  64, 224,  96, 200,  72, 232, 104,
+							 48, 176,  16, 144 , 56, 184,  24, 152,
+							240, 112, 208,  80, 248, 120, 216,  88,
+							 12, 140,  44, 172,   4, 132,  36, 164,
+							204,  76, 236, 108, 196,  68, 228, 100,
+							 60, 188,  28, 156,  52, 180,  20, 148,
+							252, 124, 220,  92, 244, 116, 212,  84
+						),
+						format: "alpha",
+						width: 8,
+						height: 8
+					} )
 				},
 				dither: false,
 				depth: { enable: false }
